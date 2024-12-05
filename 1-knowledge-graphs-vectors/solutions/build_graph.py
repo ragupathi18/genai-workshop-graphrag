@@ -1,110 +1,89 @@
-import asyncio
-import logging.config
 import os
-
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
-from neo4j_graphrag.embeddings import OpenAIEmbeddings
-from neo4j_graphrag.experimental.components.text_splitters.fixed_size_splitter import (
-    FixedSizeSplitter,
-)
-from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
-from neo4j_graphrag.llm.openai_llm import OpenAILLM
-
 load_dotenv()
 
-# Set log level to DEBUG for all neo4j_graphrag.* loggers
-logging.config.dictConfig(
-    {
-        "version": 1,
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-            }
-        },
-        "loggers": {
-            "root": {
-                "handlers": ["console"],
-            },
-            "neo4j_graphrag": {
-                "level": "DEBUG",
-            },
-        },
-    }
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain.text_splitter import CharacterTextSplitter
+from openai import OpenAI
+from neo4j import GraphDatabase
+
+COURSES_PATH = "1-knowledge-graphs-vectors/data/asciidoc"
+
+loader = DirectoryLoader(COURSES_PATH, glob="**/lesson.adoc", loader_cls=TextLoader)
+docs = loader.load()
+
+text_splitter = CharacterTextSplitter(
+    separator="\n\n",
+    chunk_size=1500,
+    chunk_overlap=200,
 )
 
-# Connect to the Neo4j database
-URI = os.getenv("NEO4J_URI")
-AUTH = (os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
-driver = GraphDatabase.driver(URI, auth=AUTH)
+chunks = text_splitter.split_documents(docs)
 
-
-# 1. Chunk the text
-# tag::text_splitter[]
-text_splitter = FixedSizeSplitter(chunk_size=150, chunk_overlap=20)
-# end::text_splitter[]
-
-
-# 2. Embed the chunks
-# tag::embedder[]
-embedder = OpenAIEmbeddings(model="text-embedding-3-large")
-# end::embedder[]
-
-
-# 3. List entities and relationships to extract
-# tag::schema[]
-entities = ["Person", "House", "Planet", "Organization"]
-relations = ["SON_OF", "HEIR_OF", "RULES", "MEMBER_OF"]
-potential_schema = [
-    ("Person", "SON_OF", "Person"),
-    ("Person", "HEIR_OF", "House"),
-    ("House", "RULES", "Planet"),
-    ("Person", "MEMBER_OF", "Organization"),
-]
-# end::schema[]
-
-
-# 4. Extract nodes and relationships from the chunks
-# tag::llm[]
-llm = OpenAILLM(
-    model_name="gpt-4o",
-    model_params={
-        "max_tokens": 2000,
-        "response_format": {"type": "json_object"},
-        "temperature": 0.0,
-        "seed": 123
-    },
-)
-# end::llm[]
-
-
-# 5. Create the pipeline
-# tag::create_pipeline[]
-pipeline = SimpleKGPipeline(
-    driver=driver,
-    text_splitter=text_splitter,
-    embedder=embedder,
-    entities=entities,
-    relations=relations,
-    potential_schema=potential_schema,
-    llm=llm,
-    on_error="IGNORE",
-    from_pdf=False,
-)
-# end::create_pipeline[]
-
-
-# 6. Run the pipeline
-# tag::run_pipeline[]
-asyncio.run(
-    pipeline.run_async(
-        text=(
-            "The son of Duke Leto Atreides and the Lady Jessica, Paul is the heir of "
-            "House Atreides, an aristocratic family that rules the planet Caladan. Lady "
-            "Jessica is a Bene Gesserit and an important key in the Bene Gesserit "
-            "breeding program."
+# tag::get_embedding[]
+def get_embedding(llm, text):
+    response = llm.embeddings.create(
+            input=chunk.page_content,
+            model="text-embedding-ada-002"
         )
+    return response.data[0].embedding
+# end::get_embedding[]
+
+# tag::get_course_data[]
+def get_course_data(llm, chunk):
+    data = {}
+
+    path = chunk.metadata['source'].split(os.path.sep)
+
+    data['course'] = path[-6]
+    data['module'] = path[-4]
+    data['lesson'] = path[-2]
+    data['url'] = f"https://graphacademy.neo4j.com/courses/{data['course']}/{data['module']}/{data['lesson']}"
+    data['text'] = chunk.page_content
+    data['embedding'] = get_embedding(llm, data['text'])
+
+    return data
+# end::get_course_data[]
+
+# tag::create_chunk[]
+def create_chunk(tx, data):
+    tx.run("""
+        MERGE (c:Course {name: $course})
+        MERGE (c)-[:HAS_MODULE]->(m:Module{name: $module})
+        MERGE (m)-[:HAS_LESSON]->(l:Lesson{name: $lesson, url: $url})
+        MERGE (l)-[:CONTAINS]->(p:Paragraph{text: $text})
+        WITH p
+        CALL db.create.setNodeVectorProperty(p, "embedding", $embedding)
+        """, 
+        data
+        )
+# end::create_chunk[]
+
+# tag::openai[]
+llm = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# end::openai[]
+
+# tag::neo4j[]
+driver = GraphDatabase.driver(
+    os.getenv('NEO4J_URI'),
+    auth=(
+        os.getenv('NEO4J_USERNAME'),
+        os.getenv('NEO4J_PASSWORD')
     )
 )
-# end::run_pipeline[]
+driver.verify_connectivity()
+# end::neo4j[]
+
+# tag::create[]
+for chunk in chunks:
+    with driver.session(database="neo4j") as session:
+        
+        session.execute_write(
+            create_chunk,
+            get_course_data(llm, chunk)
+        )
+#end::create[]
+
+# tag::close[]
 driver.close()
+# end::close[]

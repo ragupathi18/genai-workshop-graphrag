@@ -5,7 +5,7 @@ import unittest
 
 from dotenv import load_dotenv
 load_dotenv()
-
+print(os.getenv("OPENAI_API_KEY"))
 class TestEnvironment(unittest.TestCase):
 
     skip_env_variable_tests = True

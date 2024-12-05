@@ -1,60 +1,35 @@
-import asyncio
-import logging.config
 import os
-
 from dotenv import load_dotenv
-from neo4j import GraphDatabase
-from neo4j_graphrag.embeddings import OpenAIEmbeddings
-from neo4j_graphrag.experimental.components.text_splitters.fixed_size_splitter import (
-    FixedSizeSplitter,
-)
-from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
-from neo4j_graphrag.llm.openai_llm import OpenAILLM
-
 load_dotenv()
 
-# Set log level to DEBUG for all neo4j_graphrag.* loggers
-logging.config.dictConfig(
-    {
-        "version": 1,
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-            }
-        },
-        "loggers": {
-            "root": {
-                "handlers": ["console"],
-            },
-            "neo4j_graphrag": {
-                "level": "DEBUG",
-            },
-        },
-    }
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain.text_splitter import CharacterTextSplitter
+from openai import OpenAI
+from neo4j import GraphDatabase
+
+COURSES_PATH = "1-knowledge-graphs-vectors/data/asciidoc"
+
+loader = DirectoryLoader(COURSES_PATH, glob="**/lesson.adoc", loader_cls=TextLoader)
+docs = loader.load()
+
+text_splitter = CharacterTextSplitter(
+    separator="\n\n",
+    chunk_size=1500,
+    chunk_overlap=200,
 )
 
-# Connect to the Neo4j database
-URI = os.getenv("NEO4J_URI")
-AUTH = (os.getenv("NEO4J_USERNAME"), os.getenv("NEO4J_PASSWORD"))
-driver = GraphDatabase.driver(URI, auth=AUTH)
+chunks = text_splitter.split_documents(docs)
 
+# Create a function to get the embedding
 
-# 1. Chunk the text
+# Create a function to get the course data
 
+# Create OpenAI object
 
-# 2. Embed the chunks
+# Connect to Neo4j
 
+# Create a function to run the Cypher query
 
-# 3. List entities and relationships to extract
+# Iterate through the chunks and create the graph
 
-
-# 4. Extract nodes and relationships from the chunks
-
-
-# 5. Create the pipeline
-
-
-# 6. Run the pipeline
-
-
-driver.close()
+# Close the neo4j driver
